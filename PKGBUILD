@@ -1,0 +1,309 @@
+
+pkgbase=linux
+pkgname=('linux' 'linux-headers' 'linux-docs') 
+_kernelname=${pkgname#linux}
+_basekernel=4.7
+pkgver=4.7.9
+pkgrel=1
+arch=('x86_64')
+url="http://www.kernel.org/"
+license=('GPL2')
+makedepends=('xmlto' 'docbook-xsl' 'kmod' 'inetutils' 'bc'  'intel-ucode')
+options=('!strip')
+source=("http://www.kernel.org/pub/linux/kernel/v4.x/linux-4.7.tar.xz"
+        "http://www.kernel.org/pub/linux/kernel/v4.x/patch-${pkgver}.xz"
+        # the main kernel config files
+        'config'
+        #aufs patches
+        'aufs4-loopback.patch'
+        'aufs4-base.patch'
+        'aufs4-mmap.patch'
+        'aufs4-standalone.patch'
+        'aufs4-kbuild.patch'
+        'aufs4.patch'
+        'config.aufs'
+        'lockdep-debug.patch'
+        'tmpfs-idr.patch'
+        'vfs-ino.patch'
+        # standard config files for mkinitcpio ramdisk
+        'linux.preset'
+        'change-default-console-loglevel.patch'
+        'i8042-fix-aliases.patch'
+        'intel_ucode_in-kernel_fw_with_initrd_test.patch')
+md5sums=('5276563eb1f39a048e4a8a887408c031'
+         '28f6b3a4bf77710cbffbee17afcf7ae2'
+         '2bc6ce6a211bc9792ae64c3cfbda3fd9'
+         '3045aceec0ccf6b1abcb97c976fdcc27'
+         '8f27c5c81ba413e043e6d89ba0d684f9'
+         'ea2e794f3c4d58154613e2614d7a4d2c'
+         '0825a3c9b7a631cba42e84267ddd63ba'
+         '95f240eab494d7c14a74b60ba7e7fd96'
+         '4a4f05580a36501bc8032601cd2cf00f'
+         '260b2e47579140f61546f37d90e0b527'
+         '97d061f2179c49d28c75a76aad131a3c'
+         '322bbecd301047e85c4ae1044c17fcda'
+         '4083e94bf2ca74732596800a1ff12221'
+         'eb14dcfd80c00852ef81ded6e826826a'
+         'a262bedf26f26b7698143fc23de98457'
+         '93dbf73af819b77f03453a9c6de2bb47'
+         '84e8cd974858406175887645d6e5c173')
+
+
+prepare() {
+  cd "${srcdir}/linux-${_basekernel}"
+
+  # add upstream patch
+  patch -p1 -i "${srcdir}/patch-${pkgver}"
+
+  # add latest fixes from stable queue, if needed
+  # http://git.kernel.org/?p=linux/kernel/git/stable/stable-queue.git
+
+  # set DEFAULT_CONSOLE_LOGLEVEL to 4 (same value as the 'quiet' kernel param)
+  # remove this when a Kconfig knob is made available by upstream
+  # (relevant patch sent upstream: https://lkml.org/lkml/2011/7/26/227)
+  patch -p1 -i "${srcdir}/change-default-console-loglevel.patch"
+  
+  patch -p1 -i "${srcdir}/i8042-fix-aliases.patch"
+  
+  # fix intel microcode early loading, build-in option since 4.6
+  patch -p1 -i "${srcdir}/intel_ucode_in-kernel_fw_with_initrd_test.patch"
+  
+  #aufs patches for Live:
+  patch -p1 -i "${srcdir}/aufs4.patch"
+  patch -p1 -i "${srcdir}/aufs4-base.patch"
+  patch -p1 -i "${srcdir}/aufs4-kbuild.patch"
+  patch -p1 -i "${srcdir}/aufs4-loopback.patch"
+  patch -p1 -i "${srcdir}/aufs4-mmap.patch"
+  patch -p1 -i "${srcdir}/aufs4-standalone.patch"
+  patch -p1 -i "${srcdir}/lockdep-debug.patch"
+  patch -p1 -i "${srcdir}/tmpfs-idr.patch"
+  patch -p1 -i "${srcdir}/vfs-ino.patch"
+  
+  cat "${srcdir}/config" > ./.config
+
+  cat "${srcdir}/config.aufs" >> ./.config
+
+  if [ "${_kernelname}" != "" ]; then
+    sed -i "s|CONFIG_LOCALVERSION=.*|CONFIG_LOCALVERSION=\"${_kernelname}\"|g" ./.config
+  fi
+
+  # set extraversion to pkgrel
+  sed -ri "s|^(EXTRAVERSION =).*|\1 -${pkgrel}|" Makefile
+}
+
+build() {
+  cd "${srcdir}/linux-${_basekernel}"
+  
+  export KBUILD_BUILD_USER="k"
+  export KBUILD_BUILD_HOST="`uname -m`.kaosx.us"
+  
+  # get kernel version
+  make prepare
+  
+  # rewrite configuration
+  yes "" | make config >/dev/null
+
+  # build!
+  make ${MAKEFLAGS} bzImage modules
+}
+
+package_linux() {
+  pkgdesc="The Linux Kernel and modules"
+  groups=('base')
+  depends=('coreutils' 'linux-firmware' 'kmod' 'mkinitcpio>=0.7')
+  optdepends=('crda: to set the correct wireless channels of your country')
+  provides=('acerhk=0.5.35' 'aufs3')
+  conflicts=('acerhk')
+  replaces=('aufs3')
+  backup=("etc/mkinitcpio.d/${pkgname}.preset")
+  install=linux.install
+
+  cd "${srcdir}/linux-${_basekernel}"
+
+  KARCH=x86
+
+  # get kernel version
+  _kernver="$(make kernelrelease)"
+
+  mkdir -p "${pkgdir}"/{lib/modules,lib/firmware,boot}
+  make INSTALL_MOD_PATH="${pkgdir}" modules_install
+  cp arch/$KARCH/boot/bzImage "${pkgdir}/boot/vmlinuz-${pkgname}"
+
+  # add vmlinux
+  install -D -m644 vmlinux "${pkgdir}/usr/src/linux-${_kernver}/vmlinux"
+
+  # install fallback mkinitcpio.conf file and preset file for kernel
+  install -D -m644 "${srcdir}/linux.preset" "${pkgdir}/etc/mkinitcpio.d/linux.preset"
+
+  # set correct depmod command for install
+  sed \
+    -e  "s/KERNEL_NAME=.*/KERNEL_NAME=${_kernelname}/" \
+    -e  "s/KERNEL_VERSION=.*/KERNEL_VERSION=${_kernver}/" \
+    -i "${startdir}/linux.install"
+  sed \
+    -e "1s|'linux.*'|'${pkgname}'|" \
+    -e "s|ALL_kver=.*|ALL_kver=\"/boot/vmlinuz-${pkgname}\"|" \
+    -e "s|default_image=.*|default_image=\"/boot/initramfs-${pkgname}.img\"|" \
+    -e "s|fallback_image=.*|fallback_image=\"/boot/initramfs-${pkgname}-fallback.img\"|" \
+    -i "${pkgdir}/etc/mkinitcpio.d/linux.preset"
+
+  # remove build and source links
+  rm -f "${pkgdir}"/lib/modules/${_kernver}/{source,build}
+  # remove the firmware
+  rm -rf "${pkgdir}/lib/firmware"
+  # gzip -9 all modules to save 100MB of space
+  find "${pkgdir}" -name '*.ko' -exec gzip -9 {} \;
+  # make room for external modules
+  ln -s "../extramodules-${_basekernel}${_kernelname:-}" "${pkgdir}/lib/modules/${_kernver}/extramodules"
+  # add real version for building modules and running depmod from post_install/upgrade
+  mkdir -p "${pkgdir}/lib/modules/extramodules-${_basekernel}${_kernelname:-}"
+  echo "${_kernver}" > "${pkgdir}/lib/modules/extramodules-${_basekernel}${_kernelname:-}/version"
+  
+}
+
+package_linux-headers() {
+  pkgdesc="Header files and scripts for building modules for linux kernel"
+
+  install -dm755 "${pkgdir}/lib/modules/${_kernver}"
+
+  cd "${pkgdir}/lib/modules/${_kernver}"
+  ln -sf ../../../usr/src/linux-${_kernver} build
+
+  cd "${srcdir}/linux-${_basekernel}"
+  install -D -m644 Makefile \
+    "${pkgdir}/usr/src/linux-${_kernver}/Makefile"
+  install -D -m644 kernel/Makefile \
+    "${pkgdir}/usr/src/linux-${_kernver}/kernel/Makefile"
+  install -D -m644 .config \
+    "${pkgdir}/usr/src/linux-${_kernver}/.config"
+
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/include"
+
+  for i in acpi asm-generic config crypto drm generated linux math-emu \
+    media net pcmcia scsi sound trace uapi video xen; do
+    cp -a include/${i} "${pkgdir}/usr/src/linux-${_kernver}/include/"
+  done
+
+  # copy arch includes for external modules
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/arch/x86"
+  cp -a arch/x86/include "${pkgdir}/usr/src/linux-${_kernver}/arch/x86/"
+
+  # copy files necessary for later builds, like nvidia and vmware
+  cp Module.symvers "${pkgdir}/usr/src/linux-${_kernver}"
+  cp -a scripts "${pkgdir}/usr/src/linux-${_kernver}"
+
+  # fix permissions on scripts dir
+  chmod og-w -R "${pkgdir}/usr/src/linux-${_kernver}/scripts"
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/.tmp_versions"
+
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/arch/${KARCH}/kernel"
+
+  cp arch/${KARCH}/Makefile "${pkgdir}/usr/src/linux-${_kernver}/arch/${KARCH}/"
+
+  cp arch/${KARCH}/kernel/asm-offsets.s "${pkgdir}/usr/src/linux-${_kernver}/arch/${KARCH}/kernel/"
+
+  # add headers for lirc package
+  # pci
+  for i in bt8xx cx88 saa7134; do
+    mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/pci/${i}"
+    cp -a drivers/media/pci/${i}/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/pci/${i}"
+  done
+  # usb
+  for i in cpia2 em28xx pwc; do
+    mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/usb/${i}"
+    cp -a drivers/media/usb/${i}/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/usb/${i}"
+  done
+  # i2c
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/i2c"
+  cp drivers/media/i2c/*.h  "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/i2c/"
+  for i in cx25840; do
+    mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/i2c/${i}"
+    cp -a drivers/media/i2c/${i}/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/i2c/${i}"
+  done
+
+  # add docbook makefile
+  install -D -m644 Documentation/DocBook/Makefile \
+    "${pkgdir}/usr/src/linux-${_kernver}/Documentation/DocBook/Makefile"
+
+  # add dm headers
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/md"
+  cp drivers/md/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/md"
+
+  # add inotify.h
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/include/linux"
+  cp include/linux/inotify.h "${pkgdir}/usr/src/linux-${_kernver}/include/linux/"
+
+  # add wireless headers
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/net/mac80211/"
+  cp net/mac80211/*.h "${pkgdir}/usr/src/linux-${_kernver}/net/mac80211/"
+
+  # add dvb headers for external modules
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-core"
+  cp drivers/media/dvb-core/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-core/"
+  # and...
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/include/config/dvb/"
+  cp include/config/dvb/*.h "${pkgdir}/usr/src/linux-${_kernver}/include/config/dvb/"
+
+  # add dvb headers for http://mcentral.de/hg/~mrec/em28xx-new
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-frontends/"
+  cp drivers/media/dvb-frontends/lgdt330x.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-frontends/"
+  cp drivers/media/i2c/msp3400-driver.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/i2c/"
+
+  # add dvb headers
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/usb/dvb-usb"
+  cp drivers/media/usb/dvb-usb/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/usb/dvb-usb/"
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-frontends"
+  cp drivers/media/dvb-frontends/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/dvb-frontends/"
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/tuners"
+  cp drivers/media/tuners/*.h "${pkgdir}/usr/src/linux-${_kernver}/drivers/media/tuners/"
+
+  # add xfs and shmem for aufs building
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/fs/xfs/libxfs"
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}/mm"
+  cp fs/xfs/libxfs/xfs_sb.h "${pkgdir}/usr/src/linux-${_kernver}/fs/xfs/libxfs/xfs_sb.h"
+
+  #aufs4-util need
+  sed -i "s:__user::g" "${pkgdir}/usr/src/linux-${_kernver}/include/uapi/linux/aufs_type.h"
+
+  # copy in Kconfig files
+  for i in `find . -name "Kconfig*"`; do
+    mkdir -p "${pkgdir}"/usr/src/linux-${_kernver}/`echo ${i} | sed 's|/Kconfig.*||'`
+    cp ${i} "${pkgdir}/usr/src/linux-${_kernver}/${i}"
+  done
+
+  chown -R root.root "${pkgdir}/usr/src/linux-${_kernver}"
+  find "${pkgdir}/usr/src/linux-${_kernver}" -type d -exec chmod 755 {} \;
+
+  # strip scripts directory
+  find "${pkgdir}/usr/src/linux-${_kernver}/scripts" -type f -perm -u+w 2>/dev/null | while read binary ; do
+    case "$(file -bi "${binary}")" in
+      *application/x-sharedlib*) # Libraries (.so)
+        /usr/bin/strip ${STRIP_SHARED} "${binary}";;
+      *application/x-archive*) # Libraries (.a)
+        /usr/bin/strip ${STRIP_STATIC} "${binary}";;
+      *application/x-executable*) # Binaries
+        /usr/bin/strip ${STRIP_BINARIES} "${binary}";;
+    esac
+  done
+
+  # remove unneeded architectures
+  rm -rf "${pkgdir}"/usr/src/linux-${_kernver}/arch/{alpha,arm,arm26,arm64,avr32,blackfin,c6x,cris,frv,h8300,hexagon,ia64,m32r,m68k,m68knommu,mips,microblaze,mn10300,openrisc,parisc,powerpc,ppc,s390,score,sh,sh64,sparc,sparc64,tile,unicore32,um,v850,xtensa}
+}
+
+package_linux-docs() {
+  pkgdesc="Kernel hackers manual - HTML documentation that comes with the Linux kernel."
+
+  cd "${srcdir}/linux-${_basekernel}"
+
+  mkdir -p "${pkgdir}/usr/src/linux-${_kernver}"
+  cp -al Documentation "${pkgdir}/usr/src/linux-${_kernver}"
+  find "${pkgdir}" -type f -exec chmod 444 {} \;
+  find "${pkgdir}" -type d -exec chmod 755 {} \;
+
+  # remove a file already in linux package
+  rm -f "${pkgdir}/usr/src/linux-${_kernver}/Documentation/DocBook/Makefile"
+  # remove a files already in linux-headers
+  rm -f "${pkgdir}/usr/src/linux-${_kernver}/Documentation/kbuild/Kconfig.recursion-issue-01"
+  rm -f "${pkgdir}/usr/src/linux-${_kernver}/Documentation/kbuild/Kconfig.recursion-issue-02"
+  rm -f "${pkgdir}/usr/src/linux-${_kernver}/Documentation/kbuild/Kconfig.select-break"
+}
